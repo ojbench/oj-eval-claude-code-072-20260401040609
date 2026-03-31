@@ -51,8 +51,10 @@ private:
     }
 
     int32_t getImmJ(uint32_t inst) {
-        uint32_t imm = ((inst >> 20) & 0x7FE) | ((inst >> 9) & 0x800) |
-                       (inst & 0xFF000) | ((inst >> 11) & 0x100000);
+        uint32_t imm = (inst & 0xFF000) |           // imm[19:12]
+                       ((inst >> 9) & 0x800) |       // imm[11]
+                       ((inst >> 20) & 0x7FE) |      // imm[10:1]
+                       ((inst >> 11) & 0x100000);    // imm[20]
         return signExtend(imm, 21);
     }
 
@@ -343,7 +345,7 @@ public:
     RISCVSimulator() : pc(0), running(true), instruction_count(0) {
         memset(memory, 0, sizeof(memory));
         memset(registers, 0, sizeof(registers));
-        registers[2] = MEMORY_SIZE; // sp (stack pointer) starts at top of memory
+        registers[2] = 0x80000000; // sp (stack pointer) - typical RISC-V stack location
     }
 
     void loadProgram(const vector<uint8_t>& program) {
@@ -384,8 +386,8 @@ int main() {
     sim.loadProgram(program);
     sim.run();
 
-    // Output the result in register a0
-    cout << sim.getRegister(10) << endl;
+    // Output the result in register a0 as a signed integer
+    cout << (int32_t)sim.getRegister(10) << endl;
 
     return 0;
 }
