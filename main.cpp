@@ -14,6 +14,7 @@ private:
     uint32_t registers[32];
     uint32_t pc;
     bool running;
+    uint64_t instruction_count;
 
     // Sign extend functions
     int32_t signExtend(uint32_t value, int bits) {
@@ -266,12 +267,14 @@ private:
 
         registers[0] = 0; // x0 is always 0
         pc = nextPc;
+        instruction_count++;
     }
 
 public:
-    RISCVSimulator() : pc(0), running(true) {
+    RISCVSimulator() : pc(0), running(true), instruction_count(0) {
         memset(memory, 0, sizeof(memory));
         memset(registers, 0, sizeof(registers));
+        registers[2] = MEMORY_SIZE; // sp (stack pointer) starts at top of memory
     }
 
     void loadProgram(const vector<uint8_t>& program) {
@@ -279,10 +282,12 @@ public:
         memcpy(memory, program.data(), size);
     }
 
-    void run() {
-        while(running && pc < MEMORY_SIZE - 3) {
+    void run(uint64_t max_instructions = 100000000) {
+        while(running && pc < MEMORY_SIZE - 3 && instruction_count < max_instructions) {
             uint32_t inst = readWord(pc);
-            if (inst == 0) break; // Stop on null instruction
+            if (inst == 0) {
+                break;
+            }
             executeInstruction(inst);
         }
     }
@@ -292,36 +297,26 @@ public:
             return registers[reg];
         return 0;
     }
-
-    void printRegisters() {
-        for(int i = 0; i < 32; i++) {
-            if (registers[i] != 0) {
-                cout << "x" << i << ": 0x" << hex << setw(8) << setfill('0')
-                     << registers[i] << dec << endl;
-            }
-        }
-    }
-
-    uint8_t* getMemory() {
-        return memory;
-    }
 };
 
 int main() {
+    ios_base::sync_with_stdio(false);
+    cin.tie(NULL);
+
     vector<uint8_t> program;
 
     // Read binary data from stdin
-    uint8_t byte;
-    while(cin.read(reinterpret_cast<char*>(&byte), 1)) {
-        program.push_back(byte);
+    char byte;
+    while(cin.get(byte)) {
+        program.push_back((uint8_t)byte);
     }
 
     RISCVSimulator sim;
     sim.loadProgram(program);
     sim.run();
 
-    // Output result - typically register a0 (x10) contains the return value
-    cout << sim.getRegister(10) << endl;
+    // Output result - register a0 (x10) contains the return value in RISC-V ABI
+    cout << (int)sim.getRegister(10) << endl;
 
     return 0;
 }
