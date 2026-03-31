@@ -247,35 +247,79 @@ private:
                 break;
             case 0x33: // R-type ALU
                 switch(funct3) {
-                    case 0x0: // ADD/SUB
+                    case 0x0: // ADD/SUB/MUL
                         if (funct7 == 0x00)
                             registers[rd] = registers[rs1] + registers[rs2];
-                        else
+                        else if (funct7 == 0x20)
                             registers[rd] = registers[rs1] - registers[rs2];
+                        else if (funct7 == 0x01) // MUL
+                            registers[rd] = (int32_t)registers[rs1] * (int32_t)registers[rs2];
                         break;
-                    case 0x1: // SLL
-                        registers[rd] = registers[rs1] << (registers[rs2] & 0x1F);
+                    case 0x1: // SLL/MULH
+                        if (funct7 == 0x00)
+                            registers[rd] = registers[rs1] << (registers[rs2] & 0x1F);
+                        else if (funct7 == 0x01) { // MULH
+                            int64_t result = (int64_t)(int32_t)registers[rs1] * (int64_t)(int32_t)registers[rs2];
+                            registers[rd] = result >> 32;
+                        }
                         break;
-                    case 0x2: // SLT
-                        registers[rd] = ((int32_t)registers[rs1] < (int32_t)registers[rs2]) ? 1 : 0;
+                    case 0x2: // SLT/MULHSU
+                        if (funct7 == 0x00)
+                            registers[rd] = ((int32_t)registers[rs1] < (int32_t)registers[rs2]) ? 1 : 0;
+                        else if (funct7 == 0x01) { // MULHSU
+                            int64_t result = (int64_t)(int32_t)registers[rs1] * (uint64_t)registers[rs2];
+                            registers[rd] = result >> 32;
+                        }
                         break;
-                    case 0x3: // SLTU
-                        registers[rd] = (registers[rs1] < registers[rs2]) ? 1 : 0;
+                    case 0x3: // SLTU/MULHU
+                        if (funct7 == 0x00)
+                            registers[rd] = (registers[rs1] < registers[rs2]) ? 1 : 0;
+                        else if (funct7 == 0x01) { // MULHU
+                            uint64_t result = (uint64_t)registers[rs1] * (uint64_t)registers[rs2];
+                            registers[rd] = result >> 32;
+                        }
                         break;
-                    case 0x4: // XOR
-                        registers[rd] = registers[rs1] ^ registers[rs2];
+                    case 0x4: // XOR/DIV
+                        if (funct7 == 0x00)
+                            registers[rd] = registers[rs1] ^ registers[rs2];
+                        else if (funct7 == 0x01) { // DIV
+                            if (registers[rs2] != 0)
+                                registers[rd] = (int32_t)registers[rs1] / (int32_t)registers[rs2];
+                            else
+                                registers[rd] = -1;
+                        }
                         break;
-                    case 0x5: // SRL/SRA
+                    case 0x5: // SRL/SRA/DIVU
                         if (funct7 == 0x00)
                             registers[rd] = registers[rs1] >> (registers[rs2] & 0x1F);
-                        else
+                        else if (funct7 == 0x20)
                             registers[rd] = (int32_t)registers[rs1] >> (registers[rs2] & 0x1F);
+                        else if (funct7 == 0x01) { // DIVU
+                            if (registers[rs2] != 0)
+                                registers[rd] = registers[rs1] / registers[rs2];
+                            else
+                                registers[rd] = 0xFFFFFFFF;
+                        }
                         break;
-                    case 0x6: // OR
-                        registers[rd] = registers[rs1] | registers[rs2];
+                    case 0x6: // OR/REM
+                        if (funct7 == 0x00)
+                            registers[rd] = registers[rs1] | registers[rs2];
+                        else if (funct7 == 0x01) { // REM
+                            if (registers[rs2] != 0)
+                                registers[rd] = (int32_t)registers[rs1] % (int32_t)registers[rs2];
+                            else
+                                registers[rd] = registers[rs1];
+                        }
                         break;
-                    case 0x7: // AND
-                        registers[rd] = registers[rs1] & registers[rs2];
+                    case 0x7: // AND/REMU
+                        if (funct7 == 0x00)
+                            registers[rd] = registers[rs1] & registers[rs2];
+                        else if (funct7 == 0x01) { // REMU
+                            if (registers[rs2] != 0)
+                                registers[rd] = registers[rs1] % registers[rs2];
+                            else
+                                registers[rd] = registers[rs1];
+                        }
                         break;
                 }
                 break;
@@ -339,6 +383,9 @@ int main() {
     RISCVSimulator sim;
     sim.loadProgram(program);
     sim.run();
+
+    // Output the result in register a0
+    cout << sim.getRegister(10) << endl;
 
     return 0;
 }
