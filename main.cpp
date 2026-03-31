@@ -92,6 +92,31 @@ private:
         memory[addr] = value;
     }
 
+    void handleSyscall() {
+        uint32_t syscall_id = registers[17]; // a7 register
+
+        switch(syscall_id) {
+            case 64: // write syscall (fd, buffer, size)
+                {
+                    uint32_t fd = registers[10]; // a0
+                    uint32_t buffer = registers[11]; // a1
+                    uint32_t size = registers[12]; // a2
+                    if (fd == 1) { // stdout
+                        for (uint32_t i = 0; i < size && buffer + i < MEMORY_SIZE; i++) {
+                            cout << (char)memory[buffer + i];
+                        }
+                    }
+                }
+                break;
+            case 93: // exit syscall
+                running = false;
+                break;
+            default:
+                // Unknown syscall - just continue
+                break;
+        }
+    }
+
     void executeInstruction(uint32_t inst) {
         uint32_t opcode = getOpcode(inst);
         uint32_t rd = getRd(inst);
@@ -258,7 +283,7 @@ private:
                 break;
             case 0x73: // System calls
                 if (inst == 0x00000073) { // ECALL
-                    running = false;
+                    handleSyscall();
                 } else if (inst == 0x00100073) { // EBREAK
                     running = false;
                 }
@@ -314,9 +339,6 @@ int main() {
     RISCVSimulator sim;
     sim.loadProgram(program);
     sim.run();
-
-    // Output result - register a0 (x10) contains the return value in RISC-V ABI
-    cout << (int)sim.getRegister(10) << endl;
 
     return 0;
 }
