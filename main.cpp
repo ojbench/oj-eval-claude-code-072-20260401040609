@@ -1,0 +1,327 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <cstring>
+#include <cstdint>
+#include <iomanip>
+
+using namespace std;
+
+class RISCVSimulator {
+private:
+    static const uint32_t MEMORY_SIZE = 0x600000; // 6MB memory
+    uint8_t memory[MEMORY_SIZE];
+    uint32_t registers[32];
+    uint32_t pc;
+    bool running;
+
+    // Sign extend functions
+    int32_t signExtend(uint32_t value, int bits) {
+        uint32_t mask = 1U << (bits - 1);
+        return (value ^ mask) - mask;
+    }
+
+    // Extract instruction fields
+    uint32_t getRd(uint32_t inst) { return (inst >> 7) & 0x1F; }
+    uint32_t getRs1(uint32_t inst) { return (inst >> 15) & 0x1F; }
+    uint32_t getRs2(uint32_t inst) { return (inst >> 20) & 0x1F; }
+    uint32_t getOpcode(uint32_t inst) { return inst & 0x7F; }
+    uint32_t getFunct3(uint32_t inst) { return (inst >> 12) & 0x7; }
+    uint32_t getFunct7(uint32_t inst) { return (inst >> 25) & 0x7F; }
+
+    // Immediate extraction
+    int32_t getImmI(uint32_t inst) {
+        return signExtend(inst >> 20, 12);
+    }
+
+    int32_t getImmS(uint32_t inst) {
+        uint32_t imm = ((inst >> 7) & 0x1F) | ((inst >> 20) & 0xFE0);
+        return signExtend(imm, 12);
+    }
+
+    int32_t getImmB(uint32_t inst) {
+        uint32_t imm = ((inst >> 7) & 0x1E) | ((inst >> 20) & 0x7E0) |
+                       ((inst << 4) & 0x800) | ((inst >> 19) & 0x1000);
+        return signExtend(imm, 13);
+    }
+
+    int32_t getImmU(uint32_t inst) {
+        return inst & 0xFFFFF000;
+    }
+
+    int32_t getImmJ(uint32_t inst) {
+        uint32_t imm = ((inst >> 20) & 0x7FE) | ((inst >> 9) & 0x800) |
+                       (inst & 0xFF000) | ((inst >> 11) & 0x100000);
+        return signExtend(imm, 21);
+    }
+
+    // Memory access
+    uint32_t readWord(uint32_t addr) {
+        if (addr + 3 >= MEMORY_SIZE) return 0;
+        return memory[addr] | (memory[addr+1] << 8) |
+               (memory[addr+2] << 16) | (memory[addr+3] << 24);
+    }
+
+    uint16_t readHalf(uint32_t addr) {
+        if (addr + 1 >= MEMORY_SIZE) return 0;
+        return memory[addr] | (memory[addr+1] << 8);
+    }
+
+    uint8_t readByte(uint32_t addr) {
+        if (addr >= MEMORY_SIZE) return 0;
+        return memory[addr];
+    }
+
+    void writeWord(uint32_t addr, uint32_t value) {
+        if (addr + 3 >= MEMORY_SIZE) return;
+        memory[addr] = value & 0xFF;
+        memory[addr+1] = (value >> 8) & 0xFF;
+        memory[addr+2] = (value >> 16) & 0xFF;
+        memory[addr+3] = (value >> 24) & 0xFF;
+    }
+
+    void writeHalf(uint32_t addr, uint16_t value) {
+        if (addr + 1 >= MEMORY_SIZE) return;
+        memory[addr] = value & 0xFF;
+        memory[addr+1] = (value >> 8) & 0xFF;
+    }
+
+    void writeByte(uint32_t addr, uint8_t value) {
+        if (addr >= MEMORY_SIZE) return;
+        memory[addr] = value;
+    }
+
+    void executeInstruction(uint32_t inst) {
+        uint32_t opcode = getOpcode(inst);
+        uint32_t rd = getRd(inst);
+        uint32_t rs1 = getRs1(inst);
+        uint32_t rs2 = getRs2(inst);
+        uint32_t funct3 = getFunct3(inst);
+        uint32_t funct7 = getFunct7(inst);
+
+        int32_t imm_i = getImmI(inst);
+        int32_t imm_s = getImmS(inst);
+        int32_t imm_b = getImmB(inst);
+        int32_t imm_u = getImmU(inst);
+        int32_t imm_j = getImmJ(inst);
+
+        uint32_t nextPc = pc + 4;
+
+        switch(opcode) {
+            case 0x37: // LUI
+                registers[rd] = imm_u;
+                break;
+            case 0x17: // AUIPC
+                registers[rd] = pc + imm_u;
+                break;
+            case 0x6F: // JAL
+                registers[rd] = pc + 4;
+                nextPc = pc + imm_j;
+                break;
+            case 0x67: // JALR
+                registers[rd] = pc + 4;
+                nextPc = (registers[rs1] + imm_i) & ~1;
+                break;
+            case 0x63: // Branch
+                switch(funct3) {
+                    case 0x0: // BEQ
+                        if (registers[rs1] == registers[rs2])
+                            nextPc = pc + imm_b;
+                        break;
+                    case 0x1: // BNE
+                        if (registers[rs1] != registers[rs2])
+                            nextPc = pc + imm_b;
+                        break;
+                    case 0x4: // BLT
+                        if ((int32_t)registers[rs1] < (int32_t)registers[rs2])
+                            nextPc = pc + imm_b;
+                        break;
+                    case 0x5: // BGE
+                        if ((int32_t)registers[rs1] >= (int32_t)registers[rs2])
+                            nextPc = pc + imm_b;
+                        break;
+                    case 0x6: // BLTU
+                        if (registers[rs1] < registers[rs2])
+                            nextPc = pc + imm_b;
+                        break;
+                    case 0x7: // BGEU
+                        if (registers[rs1] >= registers[rs2])
+                            nextPc = pc + imm_b;
+                        break;
+                }
+                break;
+            case 0x03: // Load
+                {
+                    uint32_t addr = registers[rs1] + imm_i;
+                    switch(funct3) {
+                        case 0x0: // LB
+                            registers[rd] = signExtend(readByte(addr), 8);
+                            break;
+                        case 0x1: // LH
+                            registers[rd] = signExtend(readHalf(addr), 16);
+                            break;
+                        case 0x2: // LW
+                            registers[rd] = readWord(addr);
+                            break;
+                        case 0x4: // LBU
+                            registers[rd] = readByte(addr);
+                            break;
+                        case 0x5: // LHU
+                            registers[rd] = readHalf(addr);
+                            break;
+                    }
+                }
+                break;
+            case 0x23: // Store
+                {
+                    uint32_t addr = registers[rs1] + imm_s;
+                    switch(funct3) {
+                        case 0x0: // SB
+                            writeByte(addr, registers[rs2]);
+                            break;
+                        case 0x1: // SH
+                            writeHalf(addr, registers[rs2]);
+                            break;
+                        case 0x2: // SW
+                            writeWord(addr, registers[rs2]);
+                            break;
+                    }
+                }
+                break;
+            case 0x13: // I-type ALU
+                switch(funct3) {
+                    case 0x0: // ADDI
+                        registers[rd] = registers[rs1] + imm_i;
+                        break;
+                    case 0x2: // SLTI
+                        registers[rd] = ((int32_t)registers[rs1] < imm_i) ? 1 : 0;
+                        break;
+                    case 0x3: // SLTIU
+                        registers[rd] = (registers[rs1] < (uint32_t)imm_i) ? 1 : 0;
+                        break;
+                    case 0x4: // XORI
+                        registers[rd] = registers[rs1] ^ imm_i;
+                        break;
+                    case 0x6: // ORI
+                        registers[rd] = registers[rs1] | imm_i;
+                        break;
+                    case 0x7: // ANDI
+                        registers[rd] = registers[rs1] & imm_i;
+                        break;
+                    case 0x1: // SLLI
+                        registers[rd] = registers[rs1] << (imm_i & 0x1F);
+                        break;
+                    case 0x5: // SRLI/SRAI
+                        if (funct7 == 0x00)
+                            registers[rd] = registers[rs1] >> (imm_i & 0x1F);
+                        else
+                            registers[rd] = (int32_t)registers[rs1] >> (imm_i & 0x1F);
+                        break;
+                }
+                break;
+            case 0x33: // R-type ALU
+                switch(funct3) {
+                    case 0x0: // ADD/SUB
+                        if (funct7 == 0x00)
+                            registers[rd] = registers[rs1] + registers[rs2];
+                        else
+                            registers[rd] = registers[rs1] - registers[rs2];
+                        break;
+                    case 0x1: // SLL
+                        registers[rd] = registers[rs1] << (registers[rs2] & 0x1F);
+                        break;
+                    case 0x2: // SLT
+                        registers[rd] = ((int32_t)registers[rs1] < (int32_t)registers[rs2]) ? 1 : 0;
+                        break;
+                    case 0x3: // SLTU
+                        registers[rd] = (registers[rs1] < registers[rs2]) ? 1 : 0;
+                        break;
+                    case 0x4: // XOR
+                        registers[rd] = registers[rs1] ^ registers[rs2];
+                        break;
+                    case 0x5: // SRL/SRA
+                        if (funct7 == 0x00)
+                            registers[rd] = registers[rs1] >> (registers[rs2] & 0x1F);
+                        else
+                            registers[rd] = (int32_t)registers[rs1] >> (registers[rs2] & 0x1F);
+                        break;
+                    case 0x6: // OR
+                        registers[rd] = registers[rs1] | registers[rs2];
+                        break;
+                    case 0x7: // AND
+                        registers[rd] = registers[rs1] & registers[rs2];
+                        break;
+                }
+                break;
+            case 0x0F: // FENCE - NOP for now
+                break;
+            case 0x73: // System calls
+                if (inst == 0x00000073) { // ECALL
+                    running = false;
+                } else if (inst == 0x00100073) { // EBREAK
+                    running = false;
+                }
+                break;
+        }
+
+        registers[0] = 0; // x0 is always 0
+        pc = nextPc;
+    }
+
+public:
+    RISCVSimulator() : pc(0), running(true) {
+        memset(memory, 0, sizeof(memory));
+        memset(registers, 0, sizeof(registers));
+    }
+
+    void loadProgram(const vector<uint8_t>& program) {
+        size_t size = min(program.size(), (size_t)MEMORY_SIZE);
+        memcpy(memory, program.data(), size);
+    }
+
+    void run() {
+        while(running && pc < MEMORY_SIZE - 3) {
+            uint32_t inst = readWord(pc);
+            if (inst == 0) break; // Stop on null instruction
+            executeInstruction(inst);
+        }
+    }
+
+    uint32_t getRegister(int reg) {
+        if (reg >= 0 && reg < 32)
+            return registers[reg];
+        return 0;
+    }
+
+    void printRegisters() {
+        for(int i = 0; i < 32; i++) {
+            if (registers[i] != 0) {
+                cout << "x" << i << ": 0x" << hex << setw(8) << setfill('0')
+                     << registers[i] << dec << endl;
+            }
+        }
+    }
+
+    uint8_t* getMemory() {
+        return memory;
+    }
+};
+
+int main() {
+    vector<uint8_t> program;
+
+    // Read binary data from stdin
+    uint8_t byte;
+    while(cin.read(reinterpret_cast<char*>(&byte), 1)) {
+        program.push_back(byte);
+    }
+
+    RISCVSimulator sim;
+    sim.loadProgram(program);
+    sim.run();
+
+    // Output result - typically register a0 (x10) contains the return value
+    cout << sim.getRegister(10) << endl;
+
+    return 0;
+}
